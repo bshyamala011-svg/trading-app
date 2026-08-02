@@ -1,2 +1,5 @@
 flask
 gunicorn
+ccxt
+requests
+beautifulsoup4
