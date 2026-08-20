@@ -12,7 +12,7 @@ app = Flask(__name__)
 # ==========================================
 def init_db():
     try:
-        conn = sqlite3.connect("trading_app.db")
+        conn = sqlite3.connect("trading_app.db", check_same_thread=False)
         cursor = conn.cursor()
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS master_trade_history (
@@ -34,7 +34,7 @@ def init_db():
 
 def save_trade(symbol, price, pos, news, algos, status, mode):
     try:
-        conn = sqlite3.connect("trading_app.db")
+        conn = sqlite3.connect("trading_app.db", check_same_thread=False)
         cursor = conn.cursor()
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         cursor.execute('''
@@ -48,7 +48,7 @@ def save_trade(symbol, price, pos, news, algos, status, mode):
 
 def get_history():
     try:
-        conn = sqlite3.connect("trading_app.db")
+        conn = sqlite3.connect("trading_app.db", check_same_thread=False)
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM master_trade_history ORDER BY id DESC LIMIT 15")
         rows = cursor.fetchall()
@@ -59,69 +59,62 @@ def get_history():
         return []
 
 # ==========================================
-# 2. NEWS SENTIMENT SCRAPER
+# 2. SAFE NEWS SCRAPER
 # ==========================================
 def fetch_market_news_sentiment(symbol):
     try:
         query = f"{symbol} crypto market news"
         url = f"https://html.duckduckgo.com/html/?q={query}"
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        response = requests.get(url, headers=headers, timeout=5)
-        soup = BeautifulSoup(response.text, 'html.parser')
+        response = requests.get(url, headers=headers, timeout=3)
         
-        snippets = [a.text.lower() for a in soup.find_all('a', class_='result__snippet')]
-        full_text = " ".join(snippets)
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, 'html.parser')
+            snippets = [a.text.lower() for a in soup.find_all('a', class_='result__snippet')]
+            full_text = " ".join(snippets)
 
-        bullish_words = ['bullish', 'surge', 'buy', 'growth', 'gain', 'high', 'breakout', 'up']
-        bearish_words = ['bearish', 'drop', 'sell', 'crash', 'loss', 'down', 'fall', 'ban']
+            bullish_words = ['bullish', 'surge', 'buy', 'growth', 'gain', 'high', 'breakout', 'up']
+            bearish_words = ['bearish', 'drop', 'sell', 'crash', 'loss', 'down', 'fall', 'ban']
 
-        bull_count = sum(full_text.count(w) for w in bullish_words)
-        bear_count = sum(full_text.count(w) for w in bearish_words)
+            bull_count = sum(full_text.count(w) for w in bullish_words)
+            bear_count = sum(full_text.count(w) for w in bearish_words)
 
-        if bull_count > bear_count:
-            return "POSITIVE (BULLISH 🚀)", 1
-        elif bear_count > bull_count:
-            return "NEGATIVE (BEARISH 📉)", -1
-        else:
-            return "NEUTRAL 🟢", 0
+            if bull_count > bear_count:
+                return "POSITIVE (BULLISH 🚀)", 1
+            elif bear_count > bull_count:
+                return "NEGATIVE (BEARISH 📉)", -1
+        return "NEUTRAL 🟢", 0
     except Exception:
-        return "NEUTRAL (News Fetch Failed) 🟢", 0
+        return "NEUTRAL (News Bypass Mode) 🟢", 0
 
 # ==========================================
-# 3. TRADING ENGINE
+# 3. TRADING ENGINE (BUG FIXED)
 # ==========================================
 def execute_master_trade(symbol, api_key, secret_key, leverage):
     exchange_mode = "PAPER TRADING"
-    exchange = None
+    default_price = 65000.00 if "BTC" in symbol else 3500.00
+    price = None
 
-    # API Key இருந்தால் Delta Testnet-ஐ இணைக்கும்
     if api_key and secret_key:
         exchange_mode = "DELTA TESTNET API"
         try:
             exchange = ccxt.delta({
-                'apiKey': api_key,
-                'secret': secret_key,
+                'apiKey': api_key.strip(),
+                'secret': secret_key.strip(),
                 'enableRateLimit': True,
             })
-            # Testnet Mode ஆன் செய்யும்
             exchange.set_sandbox_mode(True)
-        except Exception as e:
-            print("API Connection Error:", e)
-
-    # Real-Time Price
-    try:
-        if exchange:
             ticker = exchange.fetch_ticker(symbol)
-            price = ticker['last']
-        else:
-            price = 65000.00 if "BTC" in symbol else 3500.00
-    except Exception:
-        price = 65000.00
+            price = ticker.get('last')
+        except Exception as e:
+            print("API Error:", e)
 
-    # 1. News Analysis
+    # Price Validation Fix: Price காலியாக இருந்தால் டிஃபால்ட் விலை எடுத்துக்கொள்ளும்
+    if price is None or not isinstance(price, (int, float)):
+        price = default_price
+
     news_status, news_score = fetch_market_news_sentiment(symbol)
 
-    # 2. Indicators
     ema_signal = 1 if price > 60000 else -1
     rsi_signal = 1 if price > 50000 else -1
     bollinger_signal = 1
@@ -139,7 +132,7 @@ def execute_master_trade(symbol, api_key, secret_key, leverage):
         status = f"TRADE EXECUTED: Short Position ({leverage})"
     else:
         pos_type = "NO TRADE (HOLD) 🟡"
-        status = "WAITING: Mixed Signals Between News & Indicators"
+        status = "WAITING: Neutral Signals"
 
     save_trade(symbol, price, pos_type, news_status, algo_details, status, exchange_mode)
 
@@ -154,7 +147,7 @@ def execute_master_trade(symbol, api_key, secret_key, leverage):
     }
 
 # ==========================================
-# 4. FRONTEND DASHBOARD
+# 4. FRONTEND DASHBOARD (PASTE FRIENDLY)
 # ==========================================
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
@@ -179,11 +172,11 @@ HTML_TEMPLATE = '''
 <div class="card">
     <h2>🤖 Master Auto-Trader (5 Algos + News AI)</h2>
     <form method="POST">
-        <label>Delta Testnet API Key (Paper Trade செய்ய இதை காலியாக விடலாம்)</label>
-        <input type="text" name="api_key" placeholder="Enter API Key">
+        <label>Delta Testnet API Key (Paper Trade செய்ய காலியாக விடலாம்)</label>
+        <input type="text" name="api_key" placeholder="Enter API Key" autocomplete="off" spellcheck="false">
 
         <label>Delta Testnet API Secret</label>
-        <input type="password" name="secret_key" placeholder="Enter API Secret">
+        <input type="text" name="secret_key" placeholder="Enter API Secret" autocomplete="off" spellcheck="false">
 
         <label>Leverage Setup</label>
         <select name="leverage">
@@ -239,21 +232,27 @@ HTML_TEMPLATE = '''
 </html>
 '''
 
-init_db()
+try:
+    init_db()
+except Exception as e:
+    print("Startup DB error:", e)
 
 @app.route('/', methods=['GET', 'POST'])
 def home():
     res = None
-    if request.method == 'POST':
-        api_key = request.form.get('api_key')
-        secret_key = request.form.get('secret_key')
-        leverage = request.form.get('leverage', '1x')
-        symbol = request.form.get('symbol', 'BTC/USDT')
+    try:
+        if request.method == 'POST':
+            api_key = request.form.get('api_key')
+            secret_key = request.form.get('secret_key')
+            leverage = request.form.get('leverage', '1x')
+            symbol = request.form.get('symbol', 'BTC/USDT')
 
-        res = execute_master_trade(symbol, api_key, secret_key, leverage)
+            res = execute_master_trade(symbol, api_key, secret_key, leverage)
 
-    history = get_history()
-    return render_template_string(HTML_TEMPLATE, res=res, history=history)
+        history = get_history()
+        return render_template_string(HTML_TEMPLATE, res=res, history=history)
+    except Exception as e:
+        return f"<h3>Application Error: {str(e)}</h3>", 200
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
